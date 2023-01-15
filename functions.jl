@@ -1,6 +1,7 @@
 using ITensors
 include("datatypes.jl")
 include("gates.jl")
+include("circuits.jl")
 
 function get_indices(n_qubits::Int)
     # return [Index(2, "qubit"*string(ii)) for ii in 1:n_qubits]
@@ -221,28 +222,135 @@ function find_active_indices(state::ClusterWavefunction, gate)
 end
 
 
-
-import Base: copy
-function copy(state::ClusterWavefunction)
-    tensors = copy([wf.itensor for wf in state.wavefunctions])
-    indices = [wf.indices for wf in state.wavefunctions]
-    return ClusterWavefunction([Wavefunction(t, inds) for (t, inds) in zip(tensors, indices)], state.indices)
+function find_active_indices(splits, gate::Gate, indices)
+    all_gate_inds = gate.itensor.tensor.inds
+    gate_inds = all_gate_inds[1:length(all_gate_inds)/2]
+    ##
+    active_wf_inds = zeros(Int, length(gate_inds))
+    for (ii, ind) in enumerate(gate_inds)
+        ind = findall(x -> x==ind, indices)[1]
+        for (kk, sp) in enumerate(splits)
+            if ind in sp 
+                active_wf_inds[ii] = kk
+                continue
+            end
+        end
+    end
+    return active_wf_inds
 end
 
-function copy(gate::Gate)
-    return Gate(gate.name, copy(gate.itensor))
+function find_active_indices(splits, pair)
+    ##
+    active_wf_inds = zeros(Int, length(pair))
+    for (ii, ind) in enumerate(pair)
+        for (kk, sp) in enumerate(splits)
+            if ind in sp 
+                active_wf_inds[ii] = kk
+                continue
+            end
+        end
+    end
+    return active_wf_inds
+end
+################ estimate memory ##########################
+
+function memory_req(n_qubits, max_qubits_per_wf, depth; fidelity=1.0)
+    # assumes linear topolgy
+    n_wfs = ceil(n_qubits/max_qubits_per_wf)
+    n_qubits_per_wf = partition_n(n_qubits, max_qubits_per_wf)
+    n_cross_gates = n_wfs-1
+    return memory_formula(n_cross_gates, n_qubits_per_wf, depth; fidelity=fidelity)
 end
 
-import Base: +
-function +(wf1::Wavefunction, wf2::Wavefunction)
-    return Wavefunction(wf1.itensor + wf2.itensor, wf1.indices)
+function memory_req(n_qubits, max_qubits_per_wf, depth, topology; fidelity=1.0)
+    # takes any topolgy
+    n_qubits_per_wf = partition_n(n_qubits, max_qubits_per_wf)
+    # @show n_qubits_per_wf
+    splits = get_splits_from_partition(n_qubits_per_wf)
+    # @show topology, splits
+    n_cross_gates = calculate_n_of_cross_gates(topology, splits)
+    # @show n_cross_gates
+    return memory_formula(n_cross_gates, n_qubits_per_wf, depth; fidelity=fidelity)
+end
+
+MEM_LIMIT::Float64 = 1e100
+
+function memory_formula(n_cross_gates, n_qubits_per_wf, depth; fidelity=1.0)
+    if maximum(n_qubits_per_wf) > 22 || (depth * n_cross_gates) > 62
+        # @show n_qubits_per_wf, depth, n_cross_gates
+        return MEM_LIMIT
+    end
+    # @show depth, n_cross_gates, 2^(depth * n_cross_gates)
+    return ceil(fidelity * 2^(depth * n_cross_gates) * sum([2^nq for nq in n_qubits_per_wf])) 
+end
+
+function find_optimal_split(n_qubits, depth; fidelity=1.0)
+    # assumes linear topolgy
+    return _find_optimal_split(n_qubits, depth, get_line_topology(n_qubits); fidelity=fidelity)
+end
+
+function find_optimal_split(n_qubits, depth, topology; fidelity=1.0)
+    # assumes linear topolgy
+    return _find_optimal_split(n_qubits, depth, topology; fidelity=fidelity)
+end
+
+function _find_optimal_split(n_qubits, depth, topology; fidelity=1.0)
+    # assumes linear topolgy
+    steps = push!(collect(1:Int(ceil(n_qubits/2))), n_qubits)
+    memory_estimates = [memory_req(n_qubits, m, depth, topology; fidelity=fidelity) for m in steps]
+    if allequal([MEM_LIMIT, memory_estimates...])
+        return 1:n_qubits
+    end
+    opt_n_per_wf = steps[argmin(memory_estimates)]
+    splits = get_splits_from_partition(partition_n(n_qubits, opt_n_per_wf))
+    return splits
+end
+
+function get_splits_from_partition(n_qubits_per_wf)
+    n_qubits_per_wf = append!([0], n_qubits_per_wf)
+    splits = [(sum(n_qubits_per_wf[1:ii])+1):sum(n_qubits_per_wf[1:ii+1]) for ii in 1:(length(n_qubits_per_wf)-1)]
+    return splits
+end
+
+function partition_n(n_qubits, n_per_wf)
+    rounded_n_per_wf = Int(ceil(n_per_wf))
+    # @show n_qubits, n_per_wf, rounded_n_per_wf, Int(ceil(n_qubits/n_per_wf))
+    nqubits_per_wf = [(rounded_n_per_wf*ii <= n_qubits) ? rounded_n_per_wf : (n_qubits % rounded_n_per_wf) for ii in 1:Int(ceil(n_qubits/rounded_n_per_wf))]
+    if nqubits_per_wf[end] == 1
+        pop!(nqubits_per_wf)
+        nqubits_per_wf[end] += 1
+    end
+    return nqubits_per_wf
 end
 
 
 ########### Circuits #######################
 
-function expected_num_paths(gates, cluster_state)
-    return length(decompose(gates, cluster_state))
+function expected_num_paths(circuit, splits, indices)
+    n_xgates = calculate_n_of_cross_gates(circuit, splits, indices)
+    return 2^n_xgates
+end
+
+function calculate_n_of_cross_gates(circuit, splits, indices)
+    n_xgates = 0
+    for gate in circuit
+        inds = find_active_indices(splits, gate, indices)
+        if !allequal(inds)
+            n_xgates += 1
+        end
+    end
+    return n_xgates
+end
+
+function calculate_n_of_cross_gates(topology, splits)
+    n_xgates = 0
+    for pair in topology
+        inds = find_active_indices(splits, pair)
+        if !allequal(inds)
+            n_xgates += 1
+        end
+    end
+    return n_xgates
 end
 
 function decompose(gates::Vector{Gate}, cluster_state)
@@ -286,6 +394,25 @@ function add_to_circuit!(circuits, gate)
     end
     return circuits
 end
-    
+ 
+
+############# utils ##########################
+
+import Base: copy
+function copy(state::ClusterWavefunction)
+    tensors = copy([wf.itensor for wf in state.wavefunctions])
+    indices = [wf.indices for wf in state.wavefunctions]
+    return ClusterWavefunction([Wavefunction(t, inds) for (t, inds) in zip(tensors, indices)], state.indices)
+end
+
+function copy(gate::Gate)
+    return Gate(gate.name, copy(gate.itensor))
+end
+
+import Base: +
+function +(wf1::Wavefunction, wf2::Wavefunction)
+    return Wavefunction(wf1.itensor + wf2.itensor, wf1.indices)
+end
+
 
 ;
