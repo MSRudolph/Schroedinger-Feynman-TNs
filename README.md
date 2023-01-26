@@ -26,6 +26,10 @@ Results of exact statevector simulation and the Schrödinger-Feynman technique. 
 
 <img src="https://github.com/MSRudolph/Schroedinger-Feynman-TNs/blob/main/figures/cluster_qubits_with_optimal_depth3_and_exact.png" width="700">
 
+When directly comparing the Schrödinger-Feynmann method with optimal partitioning, we see that for lower number of qubits, it can be around one order of magnitude faster than MPS simulation.
+
+<img src="https://github.com/MSRudolph/Schroedinger-Feynman-TNs/blob/main/figures/1d_mps_vs_cluster.png" width="700">
+
 A study of circuit depth showcases that both the Schrödinger-Feynman method and *Matrix Product State* (MPS) simulation of quantum circuits scales exponentially, whereas statevector simulation scales only linearly in depth. If the full wavefunction however can be simualted, as in this 20 qubit example, the Schrödinger-Feynman method with optimized wavefunction size is always at least as fast as the statevector method. 
 
 <img src="https://github.com/MSRudolph/Schroedinger-Feynman-TNs/blob/main/figures/scaling_with_depth.png" width="700">
